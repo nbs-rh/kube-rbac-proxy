@@ -88,7 +88,7 @@ func WithNamespace(client kubernetes.Interface) kubetest.Action {
 		}
 
 		ctx.AddCleanUp(func() error {
-			return client.CoreV1().Namespaces().Delete(context.TODO(), hardcodedAuthorizerNamespace, metav1.DeleteOptions{})
+			return client.CoreV1().Namespaces().Delete(context.TODO(), ctx.Namespace, metav1.DeleteOptions{})
 		})
 
 		return nil
@@ -105,12 +105,12 @@ func WithServiceAccount(client kubernetes.Interface, name string) kubetest.Actio
 			},
 		}
 
-		if _, err := client.CoreV1().ServiceAccounts(hardcodedAuthorizerNamespace).Create(context.TODO(), sa, metav1.CreateOptions{}); err != nil {
+		if _, err := client.CoreV1().ServiceAccounts(ctx.Namespace).Create(context.TODO(), sa, metav1.CreateOptions{}); err != nil {
 			return err
 		}
 
 		ctx.AddCleanUp(func() error {
-			return client.CoreV1().ServiceAccounts(hardcodedAuthorizerNamespace).Delete(context.TODO(), hardcodedAuthorizerClientSA, metav1.DeleteOptions{})
+			return client.CoreV1().ServiceAccounts(ctx.Namespace).Delete(context.TODO(), sa.Name, metav1.DeleteOptions{})
 		})
 
 		return nil
