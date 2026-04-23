@@ -188,6 +188,9 @@ func Complete(o *options.ProxyRunOptions) (*completedProxyRunOptions, error) {
 			return nil, fmt.Errorf("failed to read the config file: %w", err)
 		}
 	}
+	if completed.auth.Authorization != nil {
+		completed.auth.Authorization.PrepareEndpoints()
+	}
 
 	kubeconfig, err := initKubeConfig(o.KubeconfigLocation)
 	if err != nil {

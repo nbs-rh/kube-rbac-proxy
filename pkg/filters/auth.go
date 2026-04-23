@@ -75,7 +75,12 @@ func WithAuthorization(
 		}
 
 		// Get authorization attributes
-		allAttrs := getRequestAttributes(u, req)
+		allAttrs, err := getRequestAttributes(u, req)
+		if err != nil {
+			klog.V(2).Infof("Bad Request: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		if len(allAttrs) == 0 {
 			msg := "Bad Request. The request or configuration is malformed."
 			klog.V(2).Info(msg)

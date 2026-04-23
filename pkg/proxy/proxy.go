@@ -18,8 +18,8 @@ package proxy
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
-	"net/textproto"
 	"text/template"
 
 	"github.com/brancz/kube-rbac-proxy/pkg/authn"
@@ -44,7 +44,30 @@ type krpAuthorizerAttributesGetter struct {
 }
 
 // GetRequestAttributes populates authorizer attributes for the requests to kube-rbac-proxy.
-func (n krpAuthorizerAttributesGetter) GetRequestAttributes(u user.Info, r *http.Request) []authorizer.Attributes {
+// When authorization.endpoints matches the request path, only Format2 endpoint rules apply.
+// Otherwise top-level resourceAttributes and rewrites (Format1) are used.
+func (n krpAuthorizerAttributesGetter) GetRequestAttributes(u user.Info, r *http.Request) ([]authorizer.Attributes, error) {
+	// Refuse to derive attributes when the authorization section of the proxy config is missing.
+	if n.authzConfig == nil {
+		return nil, fmt.Errorf("authorization config is nil")
+	}
+
+	// When Format2 endpoints are configured, try path/method-scoped rules before Format1.
+	if len(n.authzConfig.Endpoints) > 0 {
+		attrs, matched, err := authz.EndpointAttributesFromRequest(u, r, n.authzConfig)
+		// Propagate errors from endpoint rules (e.g. required header or query missing).
+		if err != nil {
+			return nil, err
+		}
+		// If the request path matched an endpoint entry, use only those attributes (may be empty).
+		if matched {
+			for _, a := range attrs {
+				klog.V(5).Infof("kube-rbac-proxy request attributes (endpoint rule): attrs=%#+v", a)
+			}
+			return attrs, nil
+		}
+	}
+
 	apiVerb := "*"
 	switch r.Method {
 	case "POST":
@@ -59,7 +82,7 @@ func (n krpAuthorizerAttributesGetter) GetRequestAttributes(u user.Info, r *http
 		apiVerb = "delete"
 	}
 
-	// If a verb is configured in ResourceAttributes, use it instead of the HTTP method-derived verb
+	// If Format1 resourceAttributes supplies an explicit verb, it overrides the verb inferred from HTTP method.
 	if n.authzConfig.ResourceAttributes != nil && n.authzConfig.ResourceAttributes.Verb != "" {
 		apiVerb = n.authzConfig.ResourceAttributes.Verb
 	}
@@ -67,14 +90,14 @@ func (n krpAuthorizerAttributesGetter) GetRequestAttributes(u user.Info, r *http
 	var allAttrs []authorizer.Attributes
 
 	defer func() {
-		for attrs := range allAttrs {
+		for _, attrs := range allAttrs {
 			klog.V(5).Infof("kube-rbac-proxy request attributes: attrs=%#+v", attrs)
 		}
 	}()
 
+	// Format1 with no resource block: authorize as a non-resource request against the incoming URL path.
 	if n.authzConfig.ResourceAttributes == nil {
-		// Default attributes mirror the API attributes that would allow this access to kube-rbac-proxy
-		allAttrs := append(allAttrs, authorizer.AttributesRecord{
+		allAttrs = append(allAttrs, authorizer.AttributesRecord{
 			User:            u,
 			Verb:            apiVerb,
 			Namespace:       "",
@@ -86,11 +109,12 @@ func (n krpAuthorizerAttributesGetter) GetRequestAttributes(u user.Info, r *http
 			ResourceRequest: false,
 			Path:            r.URL.Path,
 		})
-		return allAttrs
+		return allAttrs, nil
 	}
 
+	// Format1 with fixed resourceAttributes and no rewrites: emit a single resource SAR with literal fields.
 	if n.authzConfig.Rewrites == nil {
-		allAttrs := append(allAttrs, authorizer.AttributesRecord{
+		allAttrs = append(allAttrs, authorizer.AttributesRecord{
 			User:            u,
 			Verb:            apiVerb,
 			Namespace:       n.authzConfig.ResourceAttributes.Namespace,
@@ -101,27 +125,17 @@ func (n krpAuthorizerAttributesGetter) GetRequestAttributes(u user.Info, r *http
 			Name:            n.authzConfig.ResourceAttributes.Name,
 			ResourceRequest: true,
 		})
-		return allAttrs
+		return allAttrs, nil
 	}
 
-	params := []string{}
-	if n.authzConfig.Rewrites.ByQueryParameter != nil && n.authzConfig.Rewrites.ByQueryParameter.Name != "" {
-		if ps, ok := r.URL.Query()[n.authzConfig.Rewrites.ByQueryParameter.Name]; ok {
-			params = append(params, ps...)
-		}
-	}
-	if n.authzConfig.Rewrites.ByHTTPHeader != nil && n.authzConfig.Rewrites.ByHTTPHeader.Name != "" {
-		mimeHeader := textproto.MIMEHeader(r.Header)
-		mimeKey := textproto.CanonicalMIMEHeaderKey(n.authzConfig.Rewrites.ByHTTPHeader.Name)
-		if ps, ok := mimeHeader[mimeKey]; ok {
-			params = append(params, ps...)
-		}
-	}
+	params := authz.CollectRewriteParams(r, n.authzConfig.Rewrites)
 
+	// Rewrites are configured but no header/query values were found: return empty (caller treats as bad request).
 	if len(params) == 0 {
-		return allAttrs
+		return allAttrs, nil
 	}
 
+	// Format1 with rewrites: one SAR per collected rewrite value, expanding {{ .Value }} in resource field templates.
 	for _, param := range params {
 		attrs := authorizer.AttributesRecord{
 			User:            u,
@@ -136,7 +150,7 @@ func (n krpAuthorizerAttributesGetter) GetRequestAttributes(u user.Info, r *http
 		}
 		allAttrs = append(allAttrs, attrs)
 	}
-	return allAttrs
+	return allAttrs, nil
 }
 
 func templateWithValue(templateString, value string) string {

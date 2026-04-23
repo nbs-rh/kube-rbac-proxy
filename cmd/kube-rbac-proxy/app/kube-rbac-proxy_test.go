@@ -101,6 +101,57 @@ func Test_parseAuthorizationConfigFile(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "Format1 and Format2 in same file",
+			fileContent: `authorization:
+  rewrites:
+    byQueryParameter:
+      name: "namespace"
+  resourceAttributes:
+    resource: namespaces
+    subresource: metrics
+    namespace: "{{ .Value }}"
+  endpoints:
+    - path: /api/v1/evaluations/jobs/*/events
+      mappings:
+        - methods: [post]
+          resources:
+            - rewrites:
+                byHttpHeader:
+                  name: X-Tenant
+              resourceAttributes:
+                namespace: "{{.FromHeader}}"
+                apiGroup: trustyai.opendatahub.io
+                resource: status-events
+                verb: create`,
+			want: &authz.Config{
+				Rewrites: &authz.SubjectAccessReviewRewrites{
+					ByQueryParameter: &authz.QueryParameterRewriteConfig{Name: "namespace"},
+				},
+				ResourceAttributes: &authz.ResourceAttributes{
+					Resource:    "namespaces",
+					Subresource: "metrics",
+					Namespace:   "{{ .Value }}",
+				},
+				Endpoints: []authz.Endpoint{{
+					Path: "/api/v1/evaluations/jobs/*/events",
+					Mappings: []authz.EndpointMapping{{
+						Methods: []string{"post"},
+						Resources: []authz.EndpointResourceRule{{
+							Rewrites: authz.SubjectAccessReviewRewrites{
+								ByHTTPHeader: &authz.HTTPHeaderRewriteConfig{Name: "X-Tenant"},
+							},
+							ResourceAttributes: authz.ResourceAttributes{
+								Namespace: "{{.FromHeader}}",
+								APIGroup:  "trustyai.opendatahub.io",
+								Resource:  "status-events",
+								Verb:      "create",
+							},
+						}},
+					}},
+				}},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

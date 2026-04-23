@@ -34,6 +34,9 @@ type Config struct {
 	ResourceAttributes     *ResourceAttributes          `json:"resourceAttributes,omitempty"`
 	ResourceAttributesFile string                       `json:"-"`
 	Static                 []StaticAuthorizationConfig  `json:"static,omitempty"`
+	// Endpoints is path-scoped SAR configuration (Format2). When a request path matches an
+	// endpoint pattern, only these rules apply for that request.
+	Endpoints []Endpoint `json:"endpoints,omitempty"`
 }
 
 // SubjectAccessReviewRewrites describes how SubjectAccessReview may be

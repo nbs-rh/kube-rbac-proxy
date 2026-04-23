@@ -19,6 +19,7 @@ package proxy
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/brancz/kube-rbac-proxy/pkg/authz"
@@ -32,6 +33,7 @@ func TestGeneratingAuthorizerAttributes(t *testing.T) {
 		authzCfg *authz.Config
 		req      *http.Request
 		expected []authorizer.Attributes
+		wantErr  string
 	}{
 		{
 			"without resource attributes and rewrites",
@@ -51,6 +53,7 @@ func TestGeneratingAuthorizerAttributes(t *testing.T) {
 					Path:            "/accounts",
 				},
 			},
+			"",
 		},
 		{
 			"without rewrites config",
@@ -69,6 +72,7 @@ func TestGeneratingAuthorizerAttributes(t *testing.T) {
 					ResourceRequest: true,
 				},
 			},
+			"",
 		},
 		{
 			"with query param rewrites config",
@@ -90,6 +94,7 @@ func TestGeneratingAuthorizerAttributes(t *testing.T) {
 					ResourceRequest: true,
 				},
 			},
+			"",
 		},
 		{
 			"with query param rewrites config but missing URL query",
@@ -99,6 +104,7 @@ func TestGeneratingAuthorizerAttributes(t *testing.T) {
 			},
 			createRequest(nil, nil),
 			nil,
+			"",
 		},
 		{
 			"with http header rewrites config",
@@ -120,6 +126,7 @@ func TestGeneratingAuthorizerAttributes(t *testing.T) {
 					ResourceRequest: true,
 				},
 			},
+			"",
 		},
 		{
 			"with http header rewrites config and additional header",
@@ -152,6 +159,7 @@ func TestGeneratingAuthorizerAttributes(t *testing.T) {
 					ResourceRequest: true,
 				},
 			},
+			"",
 		},
 		{
 			"with http header rewrites config but missing header",
@@ -161,6 +169,7 @@ func TestGeneratingAuthorizerAttributes(t *testing.T) {
 			},
 			createRequest(nil, nil),
 			nil,
+			"",
 		},
 		{
 			"with http header and query param rewrites config",
@@ -199,6 +208,115 @@ func TestGeneratingAuthorizerAttributes(t *testing.T) {
 					ResourceRequest: true,
 				},
 			},
+			"",
+		},
+		{
+			"Format2 endpoint match takes precedence over Format1",
+			&authz.Config{
+				Endpoints: []authz.Endpoint{{
+					Path: "/api/v1/evaluations/jobs/*/events",
+					Mappings: []authz.EndpointMapping{{
+						Methods: []string{"post"},
+						Resources: []authz.EndpointResourceRule{{
+							Rewrites: authz.SubjectAccessReviewRewrites{
+								ByHTTPHeader: &authz.HTTPHeaderRewriteConfig{Name: "X-Tenant"},
+							},
+							ResourceAttributes: authz.ResourceAttributes{
+								Namespace: "{{.FromHeader}}",
+								APIGroup:  "trustyai.opendatahub.io",
+								Resource:  "status-events",
+								Verb:      "create",
+							},
+						}},
+					}},
+				}},
+				Rewrites: &authz.SubjectAccessReviewRewrites{
+					ByQueryParameter: &authz.QueryParameterRewriteConfig{Name: "namespace"},
+				},
+				ResourceAttributes: &authz.ResourceAttributes{
+					Namespace:   "{{ .Value }}",
+					APIVersion:  "v1",
+					Resource:    "namespace",
+					Subresource: "metrics",
+				},
+			},
+			func() *http.Request {
+				r := httptest.NewRequest(http.MethodPost, "/api/v1/evaluations/jobs/job-1/events?namespace=wrong-ns", nil)
+				r.Header.Set("X-Tenant", "tenant-a")
+				return r
+			}(),
+			[]authorizer.Attributes{
+				authorizer.AttributesRecord{
+					User:            nil,
+					Verb:            "create",
+					Namespace:       "tenant-a",
+					APIGroup:        "trustyai.opendatahub.io",
+					APIVersion:      "",
+					Resource:        "status-events",
+					Subresource:     "",
+					Name:            "",
+					ResourceRequest: true,
+				},
+			},
+			"",
+		},
+		{
+			"Format2 missing required header returns error",
+			&authz.Config{
+				Endpoints: []authz.Endpoint{{
+					Path: "/api/v1/evaluations/jobs/*/events",
+					Mappings: []authz.EndpointMapping{{
+						Methods: []string{"post"},
+						Resources: []authz.EndpointResourceRule{{
+							Rewrites: authz.SubjectAccessReviewRewrites{
+								ByHTTPHeader: &authz.HTTPHeaderRewriteConfig{Name: "X-Tenant"},
+							},
+							ResourceAttributes: authz.ResourceAttributes{Namespace: "{{.FromHeader}}", Verb: "create"},
+						}},
+					}},
+				}},
+			},
+			httptest.NewRequest(http.MethodPost, "/api/v1/evaluations/jobs/j1/events", nil),
+			nil,
+			"required header",
+		},
+		{
+			"no Format2 endpoint match uses Format1",
+			&authz.Config{
+				Endpoints: []authz.Endpoint{{
+					Path: "/api/v1/other",
+					Mappings: []authz.EndpointMapping{{
+						Methods: []string{"get"},
+						Resources: []authz.EndpointResourceRule{{
+							ResourceAttributes: authz.ResourceAttributes{Resource: "wrong"},
+						}},
+					}},
+				}},
+				Rewrites: &authz.SubjectAccessReviewRewrites{
+					ByQueryParameter: &authz.QueryParameterRewriteConfig{Name: "namespace"},
+				},
+				ResourceAttributes: &authz.ResourceAttributes{
+					Namespace:   "{{ .Value }}",
+					APIVersion:  "v1",
+					Resource:    "namespace",
+					Subresource: "metrics",
+				},
+			},
+			createRequest(map[string][]string{"namespace": {"format1-ns"}}, nil),
+			[]authorizer.Attributes{
+				authorizer.AttributesRecord{
+					User:            nil,
+					Verb:            "get",
+					Namespace:       "format1-ns",
+					APIGroup:        "",
+					APIVersion:      "v1",
+					Resource:        "namespace",
+					Subresource:     "metrics",
+					Name:            "",
+					ResourceRequest: true,
+				},
+			},
+			"",
 		},
 	}
 
@@ -206,7 +324,16 @@ func TestGeneratingAuthorizerAttributes(t *testing.T) {
 		t.Run(c.desc, func(t *testing.T) {
 			t.Log(c.req.URL.Query())
 			n := krpAuthorizerAttributesGetter{authzConfig: c.authzCfg}
-			res := n.GetRequestAttributes(nil, c.req)
+			res, err := n.GetRequestAttributes(nil, c.req)
+			if c.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+					t.Fatalf("want err containing %q, got err=%v", c.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
 			if !cmp.Equal(res, c.expected) {
 				t.Errorf("Generated authorizer attributes are not correct. Expected %v, recieved %v", c.expected, res)
 			}
