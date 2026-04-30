@@ -66,9 +66,9 @@ import (
 
 // Endpoint describes path-scoped SAR mappings (Format2).
 type Endpoint struct {
-	Path      string             `json:"path,omitempty"`
-	Mappings  []EndpointMapping  `json:"mappings,omitempty"`
-	PathParts []string           `json:"-"`
+	Path      string            `json:"path,omitempty"`
+	Mappings  []EndpointMapping `json:"mappings,omitempty"`
+	PathParts []string          `json:"-"`
 }
 
 // EndpointMapping selects resource rules by HTTP method.
@@ -162,10 +162,10 @@ func ValidateAuthorizationConfig(c *Config) error {
 	if c == nil {
 		return nil
 	}
-	for ei, ep := range c.Endpoints {
-		for mi, m := range ep.Mappings {
-			if len(m.Methods) == 0 {
-				return fmt.Errorf("authorization.endpoints[%d] (path %q): mappings[%d] must specify a non-empty methods list", ei, ep.Path, mi)
+	for index, endpoint := range c.Endpoints {
+		for mappingIndex, mapping := range endpoint.Mappings {
+			if len(mapping.Methods) == 0 {
+				return fmt.Errorf("authorization.endpoints[%d] (path %q): mappings[%d] must specify a non-empty methods list", index, endpoint.Path, mappingIndex)
 			}
 		}
 	}
@@ -209,17 +209,17 @@ func applyEndpointFieldTemplate(templateString string, values TemplateData) (str
 	return out.String(), nil
 }
 
-func expandEndpointResourceField(fieldName, templateString string, tv TemplateData) (string, error) {
-	s, err := applyEndpointFieldTemplate(templateString, tv)
+func expandEndpointResourceField(fieldName, templateString string, templateData TemplateData) (string, error) {
+	s, err := applyEndpointFieldTemplate(templateString, templateData)
 	if err != nil {
 		return "", fmt.Errorf("resourceAttributes.%s: %w", fieldName, err)
 	}
 	return s, nil
 }
 
-func findResourcesForEndpoint(r *http.Request, ep Endpoint) []EndpointResourceRule {
-	for _, mapping := range ep.Mappings {
-		if matchMethods(r.Method, mapping.Methods) {
+func findRulesForEndpoint(request *http.Request, endpoint Endpoint) []EndpointResourceRule {
+	for _, mapping := range endpoint.Mappings {
+		if matchMethods(request.Method, mapping.Methods) {
 			return mapping.Resources
 		}
 	}
@@ -229,16 +229,16 @@ func findResourcesForEndpoint(r *http.Request, ep Endpoint) []EndpointResourceRu
 // EndpointAttributesFromRequest derives SAR attributes from authorization.endpoints (Format2).
 // If the request path matches any endpoint entry, matched is true and Format1 top-level
 // resourceAttributes/rewrites must not be used for that request (even when attrs is empty or err is set).
-func EndpointAttributesFromRequest(u user.Info, r *http.Request, cfg *Config) (attrs []authorizer.Attributes, matched bool, err error) {
+func EndpointAttributesFromRequest(userInfo user.Info, request *http.Request, cfg *Config) (attrs []authorizer.Attributes, matched bool, err error) {
 	if cfg == nil || len(cfg.Endpoints) == 0 {
 		return nil, false, nil
 	}
-	for _, ep := range cfg.Endpoints {
-		if !matchEndpoint(r.URL.Path, ep) {
+	for _, endpoint := range cfg.Endpoints {
+		if !matchEndpoint(request.URL.Path, endpoint) {
 			continue
 		}
-		rules := findResourcesForEndpoint(r, ep)
-		attrs, err := attributesFromEndpointResourceRules(u, r, rules)
+		rules := findRulesForEndpoint(request, endpoint)
+		attrs, err := attributesFromEndpointResourceRules(userInfo, request, rules)
 		return attrs, true, err
 	}
 	return nil, false, nil
