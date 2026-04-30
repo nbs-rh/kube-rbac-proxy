@@ -127,6 +127,10 @@ func matchEndpoint(requestPath string, endpoint Endpoint) bool {
 	if len(patternParts) == 0 {
 		return false
 	}
+    cleaned := path.Clean(requestPath)
+    if cleaned != requestPath {
+        return error  
+    }
 	endpointParts := strings.Split(requestPath, "/")
 	if len(endpointParts) != len(patternParts) {
 		return false
