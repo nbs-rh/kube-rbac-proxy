@@ -57,7 +57,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/textproto"
 	"path"
 	"strings"
 	"text/template"
@@ -105,19 +104,19 @@ type TemplateData struct {
 // The main binary calls this from Complete after parseAuthorizationConfigFile; tests and any
 // library user that constructs Config with non-empty Endpoints must call it too. Omitting
 // PrepareEndpoints leaves PathParts nil and endpoint patterns never match.
-func (c *Config) PrepareEndpoints() {
-	c.prepareEndpointPatterns()
+func (cfg *Config) PrepareEndpoints() {
+	cfg.prepareEndpointPatterns()
 }
 
-// prepareEndpointPatterns sets PathParts for each entry in c.Endpoints. It exists only to
+// prepareEndpointPatterns sets PathParts for each entry in cfg.Endpoints. It exists only to
 // implement PrepareEndpoints and must not be called from request handlers or tests; call
 // PrepareEndpoints on the Config instead.
-func (c *Config) prepareEndpointPatterns() {
-	if c == nil {
+func (cfg *Config) prepareEndpointPatterns() {
+	if cfg == nil {
 		return
 	}
-	for i := range c.Endpoints {
-		c.Endpoints[i].PathParts = strings.Split(c.Endpoints[i].Path, "/")
+	for endpointIndex := range cfg.Endpoints {
+		cfg.Endpoints[endpointIndex].PathParts = strings.Split(cfg.Endpoints[endpointIndex].Path, "/")
 	}
 }
 
@@ -142,11 +141,11 @@ func matchEndpoint(requestPath string, endpoint Endpoint) bool {
 	if len(endpointParts) != len(patternParts) {
 		return false
 	}
-	for i, part := range patternParts {
-		if part == "*" {
+	for segmentIndex, patternSegment := range patternParts {
+		if patternSegment == "*" {
 			continue
 		}
-		if endpointParts[i] != part {
+		if endpointParts[segmentIndex] != patternSegment {
 			return false
 		}
 	}
@@ -157,28 +156,61 @@ func matchMethods(fromRequest string, fromConfig []string) bool {
 	if len(fromConfig) == 0 {
 		return false
 	}
-	m := strings.ToLower(fromRequest)
-	for _, c := range fromConfig {
-		if strings.ToLower(c) == m {
+	requestMethod := strings.ToLower(fromRequest)
+	for _, configuredMethod := range fromConfig {
+		if strings.ToLower(configuredMethod) == requestMethod {
 			return true
 		}
 	}
 	return false
 }
 
-// ValidateAuthorizationConfig checks authorization config for inconsistencies that would
-// otherwise fail silently at runtime. It returns an error if any Format2 endpoint mapping
-// has an empty methods list (YAML "methods: []" or omitted methods).
-func ValidateAuthorizationConfig(c *Config) error {
-	if c == nil {
+// ValidateAuthorizationConfig checks Format2 authorization.endpoints for inconsistencies
+// that would otherwise fail silently or confusingly at runtime. It is invoked after loading
+// the config file.
+func ValidateAuthorizationConfig(cfg *Config) error {
+	if cfg == nil {
 		return nil
 	}
-	for index, endpoint := range c.Endpoints {
+	for endpointIndex, endpoint := range cfg.Endpoints {
+		if strings.TrimSpace(endpoint.Path) == "" {
+			return fmt.Errorf("authorization.endpoints[%d]: path must be non-empty", endpointIndex)
+		}
+		if len(endpoint.Mappings) == 0 {
+			return fmt.Errorf("authorization.endpoints[%d] (path %q): mappings must contain at least one entry", endpointIndex, endpoint.Path)
+		}
 		for mappingIndex, mapping := range endpoint.Mappings {
 			if len(mapping.Methods) == 0 {
-				return fmt.Errorf("authorization.endpoints[%d] (path %q): mappings[%d] must specify a non-empty methods list", index, endpoint.Path, mappingIndex)
+				return fmt.Errorf("authorization.endpoints[%d] (path %q): mappings[%d] must specify a non-empty methods list", endpointIndex, endpoint.Path, mappingIndex)
+			}
+			if len(mapping.Resources) == 0 {
+				return fmt.Errorf("authorization.endpoints[%d] (path %q): mappings[%d] must contain at least one resource rule", endpointIndex, endpoint.Path, mappingIndex)
+			}
+			for resourceIndex, rule := range mapping.Resources {
+				if err := validateEndpointResourceRuleRewrites(endpointIndex, endpoint.Path, mappingIndex, resourceIndex, &rule.Rewrites); err != nil {
+					return err
+				}
 			}
 		}
+	}
+	return nil
+}
+
+func validateEndpointResourceRuleRewrites(endpointIndex int, endpointPath string, mappingIndex, resourceIndex int, rewrites *SubjectAccessReviewRewrites) error {
+	if rewrites == nil {
+		return nil
+	}
+	if rewrites.ByHTTPHeader != nil && strings.TrimSpace(rewrites.ByHTTPHeader.Name) == "" {
+		return fmt.Errorf(
+			"authorization.endpoints[%d] (path %q): mappings[%d].resources[%d].rewrites.byHttpHeader must specify a non-empty name",
+			endpointIndex, endpointPath, mappingIndex, resourceIndex,
+		)
+	}
+	if rewrites.ByQueryParameter != nil && strings.TrimSpace(rewrites.ByQueryParameter.Name) == "" {
+		return fmt.Errorf(
+			"authorization.endpoints[%d] (path %q): mappings[%d].resources[%d].rewrites.byQueryParameter must specify a non-empty name",
+			endpointIndex, endpointPath, mappingIndex, resourceIndex,
+		)
 	}
 	return nil
 }
@@ -213,11 +245,11 @@ func applyEndpointFieldTemplate(templateString string, values TemplateData) (str
 	if err != nil {
 		return "", fmt.Errorf("parse template %q: %w", templateString, err)
 	}
-	out := bytes.NewBuffer(nil)
-	if err := tmpl.Execute(out, values); err != nil {
+	output := bytes.NewBuffer(nil)
+	if err := tmpl.Execute(output, values); err != nil {
 		return "", fmt.Errorf("execute template %q: %w", templateString, err)
 	}
-	return out.String(), nil
+	return output.String(), nil
 }
 
 func expandEndpointResourceField(fieldName, templateString string, templateData TemplateData) (string, error) {
@@ -263,106 +295,107 @@ func EndpointAttributesFromRequest(userInfo user.Info, request *http.Request, cf
 	return nil, false, nil
 }
 
-func attributesFromEndpointResourceRules(u user.Info, r *http.Request, rules []EndpointResourceRule) ([]authorizer.Attributes, error) {
-	var out []authorizer.Attributes
+func attributesFromEndpointResourceRules(userInfo user.Info, request *http.Request, rules []EndpointResourceRule) ([]authorizer.Attributes, error) {
+	var attrsOut []authorizer.Attributes
 	for _, rule := range rules {
-		td := TemplateData{FromMethod: HTTPToKubeVerb(r.Method)}
+		templateData := TemplateData{FromMethod: HTTPToKubeVerb(request.Method)}
 
 		if rule.Rewrites.ByHTTPHeader != nil && rule.Rewrites.ByHTTPHeader.Name != "" {
-			headerValue := r.Header.Get(rule.Rewrites.ByHTTPHeader.Name)
+			headerValue := request.Header.Get(rule.Rewrites.ByHTTPHeader.Name)
 			if headerValue == "" {
 				return nil, fmt.Errorf("required header %q is missing", rule.Rewrites.ByHTTPHeader.Name)
 			}
-			td.FromHeader = headerValue
+			templateData.FromHeader = headerValue
 		}
 		queryParamName := rewriteQueryParamName(&rule.Rewrites)
 		if queryParamName != "" {
-			vs, ok := r.URL.Query()[queryParamName]
-			if !ok || len(vs) == 0 {
+			queryValues, ok := request.URL.Query()[queryParamName]
+			if !ok || len(queryValues) == 0 {
 				return nil, fmt.Errorf("required query parameter %q is missing", queryParamName)
 			}
-			td.FromQueryString = vs[0]
+			templateData.FromQueryString = queryValues[0]
 		}
-		if td.FromHeader != "" {
-			td.Value = td.FromHeader
-		} else if td.FromQueryString != "" {
-			td.Value = td.FromQueryString
+		if templateData.FromHeader != "" {
+			templateData.Value = templateData.FromHeader
+		} else if templateData.FromQueryString != "" {
+			templateData.Value = templateData.FromQueryString
 		}
 
 		resAttrs := rule.ResourceAttributes
-		verb, err := expandEndpointResourceField("verb", resAttrs.Verb, td)
+		verb, err := expandEndpointResourceField("verb", resAttrs.Verb, templateData)
 		if err != nil {
 			return nil, err
 		}
 		if verb == "" {
-			verb = td.FromMethod
+			verb = templateData.FromMethod
 		}
 
-		ns, err := expandEndpointResourceField("namespace", resAttrs.Namespace, td)
+		namespace, err := expandEndpointResourceField("namespace", resAttrs.Namespace, templateData)
 		if err != nil {
 			return nil, err
 		}
-		group, err := expandEndpointResourceField("apiGroup", resAttrs.APIGroup, td)
+		apiGroup, err := expandEndpointResourceField("apiGroup", resAttrs.APIGroup, templateData)
 		if err != nil {
 			return nil, err
 		}
-		version, err := expandEndpointResourceField("apiVersion", resAttrs.APIVersion, td)
+		apiVersion, err := expandEndpointResourceField("apiVersion", resAttrs.APIVersion, templateData)
 		if err != nil {
 			return nil, err
 		}
-		resource, err := expandEndpointResourceField("resource", resAttrs.Resource, td)
+		resource, err := expandEndpointResourceField("resource", resAttrs.Resource, templateData)
 		if err != nil {
 			return nil, err
 		}
-		subresource, err := expandEndpointResourceField("subresource", resAttrs.Subresource, td)
+		subresource, err := expandEndpointResourceField("subresource", resAttrs.Subresource, templateData)
 		if err != nil {
 			return nil, err
 		}
-		name, err := expandEndpointResourceField("name", resAttrs.Name, td)
+		name, err := expandEndpointResourceField("name", resAttrs.Name, templateData)
 		if err != nil {
 			return nil, err
 		}
 
-		out = append(out, authorizer.AttributesRecord{
-			User:            u,
+		attrsOut = append(attrsOut, authorizer.AttributesRecord{
+			User:            userInfo,
 			Verb:            verb,
-			Namespace:       ns,
-			APIGroup:        group,
-			APIVersion:      version,
+			Namespace:       namespace,
+			APIGroup:        apiGroup,
+			APIVersion:      apiVersion,
 			Resource:        resource,
 			Subresource:     subresource,
 			Name:            name,
 			ResourceRequest: true,
 		})
 	}
-	return out, nil
+	return attrsOut, nil
 }
 
-func rewriteQueryParamName(r *SubjectAccessReviewRewrites) string {
-	if r.ByQueryParameter != nil && r.ByQueryParameter.Name != "" {
-		return r.ByQueryParameter.Name
+func rewriteQueryParamName(rewrites *SubjectAccessReviewRewrites) string {
+	if rewrites.ByQueryParameter != nil && rewrites.ByQueryParameter.Name != "" {
+		return rewrites.ByQueryParameter.Name
 	}
 	return ""
 }
 
 // CollectRewriteParams gathers rewrite values for Format1 authorization using the same
 // header and query keys as SubjectAccessReviewRewrites.
-func CollectRewriteParams(r *http.Request, rewrites *SubjectAccessReviewRewrites) []string {
+func CollectRewriteParams(request *http.Request, rewrites *SubjectAccessReviewRewrites) []string {
 	if rewrites == nil {
 		return nil
 	}
 	var params []string
 	if rewrites.ByQueryParameter != nil && rewrites.ByQueryParameter.Name != "" {
-		if ps, ok := r.URL.Query()[rewrites.ByQueryParameter.Name]; ok {
-			params = append(params, ps...)
+		if queryValues, ok := request.URL.Query()[rewrites.ByQueryParameter.Name]; ok {
+			params = append(params, queryValues...)
 		}
 	}
+
 	if rewrites.ByHTTPHeader != nil && rewrites.ByHTTPHeader.Name != "" {
-		mimeHeader := textproto.MIMEHeader(r.Header)
-		mimeKey := textproto.CanonicalMIMEHeaderKey(rewrites.ByHTTPHeader.Name)
-		if ps, ok := mimeHeader[mimeKey]; ok {
-			params = append(params, ps...)
+		headerValues := request.Header.Values(rewrites.ByHTTPHeader.Name)
+		if len(headerValues) > 0 {
+			params = append(params, headerValues...)
 		}
 	}
+
 	return params
 }

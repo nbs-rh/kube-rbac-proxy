@@ -183,6 +183,18 @@ func Test_parseAuthorizationConfigFile(t *testing.T) {
 			wantErr:    true,
 			wantErrSub: "non-empty methods",
 		},
+		{
+			name: "Format2 mapping rejects empty resources list",
+			fileContent: `authorization:
+  endpoints:
+    - path: /api/v1/z
+      mappings:
+        - methods: [get]
+          resources: []`,
+			want:       nil,
+			wantErr:    true,
+			wantErrSub: "resource rule",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -128,6 +128,111 @@ func TestValidateAuthorizationConfig_EndpointMappingsMethods(t *testing.T) {
 	}
 }
 
+func TestValidateAuthorizationConfig_invalidEndpointShape(t *testing.T) {
+	cases := []struct {
+		name   string
+		cfg    *Config
+		substr string
+	}{
+		{
+			name: "empty path",
+			cfg: &Config{Endpoints: []Endpoint{{
+				Path: "",
+				Mappings: []EndpointMapping{{
+					Methods:   []string{"get"},
+					Resources: []EndpointResourceRule{{ResourceAttributes: ResourceAttributes{Verb: "get"}}},
+				}},
+			}}},
+			substr: "path must be non-empty",
+		},
+		{
+			name: "whitespace-only path",
+			cfg: &Config{Endpoints: []Endpoint{{
+				Path: " \t ",
+				Mappings: []EndpointMapping{{
+					Methods:   []string{"get"},
+					Resources: []EndpointResourceRule{{ResourceAttributes: ResourceAttributes{Verb: "get"}}},
+				}},
+			}}},
+			substr: "path must be non-empty",
+		},
+		{
+			name: "no mappings",
+			cfg: &Config{Endpoints: []Endpoint{{
+				Path:     "/p",
+				Mappings: nil,
+			}}},
+			substr: "mappings must contain",
+		},
+		{
+			name: "empty mappings slice",
+			cfg: &Config{Endpoints: []Endpoint{{
+				Path:     "/p",
+				Mappings: []EndpointMapping{},
+			}}},
+			substr: "mappings must contain",
+		},
+		{
+			name: "empty resources",
+			cfg: &Config{Endpoints: []Endpoint{{
+				Path: "/p",
+				Mappings: []EndpointMapping{{
+					Methods:   []string{"get"},
+					Resources: nil,
+				}},
+			}}},
+			substr: "at least one resource rule",
+		},
+		{
+			name: "empty resources slice",
+			cfg: &Config{Endpoints: []Endpoint{{
+				Path: "/p",
+				Mappings: []EndpointMapping{{
+					Methods:   []string{"get"},
+					Resources: []EndpointResourceRule{},
+				}},
+			}}},
+			substr: "at least one resource rule",
+		},
+		{
+			name: "byHttpHeader with empty name",
+			cfg: &Config{Endpoints: []Endpoint{{
+				Path: "/p",
+				Mappings: []EndpointMapping{{
+					Methods: []string{"get"},
+					Resources: []EndpointResourceRule{{
+						Rewrites:           SubjectAccessReviewRewrites{ByHTTPHeader: &HTTPHeaderRewriteConfig{Name: ""}},
+						ResourceAttributes: ResourceAttributes{Verb: "get", Resource: "pods"},
+					}},
+				}},
+			}}},
+			substr: "byHttpHeader",
+		},
+		{
+			name: "byQueryParameter with empty name",
+			cfg: &Config{Endpoints: []Endpoint{{
+				Path: "/p",
+				Mappings: []EndpointMapping{{
+					Methods: []string{"get"},
+					Resources: []EndpointResourceRule{{
+						Rewrites:           SubjectAccessReviewRewrites{ByQueryParameter: &QueryParameterRewriteConfig{Name: ""}},
+						ResourceAttributes: ResourceAttributes{Verb: "get", Resource: "pods"},
+					}},
+				}},
+			}}},
+			substr: "byQueryParameter",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateAuthorizationConfig(tc.cfg)
+			if err == nil || !strings.Contains(err.Error(), tc.substr) {
+				t.Fatalf("ValidateAuthorizationConfig() err=%v, want substring %q", err, tc.substr)
+			}
+		})
+	}
+}
+
 func TestEndpointAttributesFromRequest_wrongHTTPMethodOnMatchedPath(t *testing.T) {
 	cfg := &Config{
 		Endpoints: []Endpoint{{
