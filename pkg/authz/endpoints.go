@@ -274,7 +274,7 @@ func attributesFromEndpointResourceRules(u user.Info, r *http.Request, rules []E
 			tv.Value = tv.FromQueryString
 		}
 
-		ra := rule.ResourceAttributes
+		resAttrs := rule.ResourceAttributes
 		verb, err := expandEndpointResourceField("verb", ra.Verb, tv)
 		if err != nil {
 			return nil, err
