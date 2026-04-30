@@ -218,6 +218,10 @@ func Complete(o *options.ProxyRunOptions) (*completedProxyRunOptions, error) {
 		MaxUploadBufferPerConnection: int32(o.HTTP2MaxSize) * int32(o.HTTP2MaxConcurrentStreams),
 	}
 
+	if completed.auth == nil || completed.auth.Authorization == nil {
+		return nil, errors.New("authorization configuration is nil; ensure --config-file does not set authorization to null and that defaults are intact")
+	}
+
 	return completed, nil
 }
 

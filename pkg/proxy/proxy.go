@@ -47,9 +47,10 @@ type krpAuthorizerAttributesGetter struct {
 // When authorization.endpoints matches the request path, only Format2 endpoint rules apply.
 // Otherwise top-level resourceAttributes and rewrites (Format1) are used.
 func (n krpAuthorizerAttributesGetter) GetRequestAttributes(u user.Info, r *http.Request) ([]authorizer.Attributes, error) {
-	// Refuse to derive attributes when the authorization section of the proxy config is missing.
+	// Non-nil authorization is enforced in Complete before the server starts; this branch is defensive.
 	if n.authzConfig == nil {
-		return nil, fmt.Errorf("authorization config is nil")
+		klog.Error("GetRequestAttributes: authorization config is nil")
+		return nil, fmt.Errorf("Error during authorization")
 	}
 
 	// When Format2 endpoints are configured, try path/method-scoped rules before Format1.
@@ -59,7 +60,8 @@ func (n krpAuthorizerAttributesGetter) GetRequestAttributes(u user.Info, r *http
 		if err != nil {
 			return nil, err
 		}
-		// If the request path matched an endpoint entry, use only those attributes (may be empty).
+		// If the request path matched an endpoint entry, use only those attributes (errors from
+		// rules, e.g. ErrEndpointMethodNotAllowed, are propagated; empty attrs without error is still possible for misconfigured empty resources).
 		if matched {
 			for _, a := range attrs {
 				klog.V(5).Infof("kube-rbac-proxy request attributes (endpoint rule): attrs=%#+v", a)

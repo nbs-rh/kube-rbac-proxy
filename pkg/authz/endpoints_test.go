@@ -17,6 +17,7 @@ limitations under the License.
 package authz
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -46,6 +47,8 @@ func TestMatchEndpoint(t *testing.T) {
 		{"/api/v1/evaluations/jobs/*/events", "/api/v1/evaluations/jobs", false},
 		{"/api/v1/evaluations/jobs/*/events", "/api/v1/evaluations/jobs/j1/events", true},
 		{"/api/v1/evaluations/jobs/*/events", "/api/v1/evaluations/jobs/j1/events/extra", false},
+		{"/api/v1/jobs/*", "//api/v1/jobs/99", true},
+		{"/api/v1/jobs/*", "/api/v1/jobs/99/", true},
 	}
 
 	for _, c := range cases {
@@ -122,6 +125,32 @@ func TestValidateAuthorizationConfig_EndpointMappingsMethods(t *testing.T) {
 		}},
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestEndpointAttributesFromRequest_wrongHTTPMethodOnMatchedPath(t *testing.T) {
+	cfg := &Config{
+		Endpoints: []Endpoint{{
+			Path: "/api/v1/evaluations/jobs/*/events",
+			Mappings: []EndpointMapping{{
+				Methods: []string{"post"},
+				Resources: []EndpointResourceRule{{
+					ResourceAttributes: ResourceAttributes{Verb: "create", Resource: "status-events"},
+				}},
+			}},
+		}},
+	}
+	cfg.PrepareEndpoints()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/evaluations/jobs/j1/events", nil)
+	attrs, matched, err := EndpointAttributesFromRequest(testUser("u"), req, cfg)
+	if attrs != nil {
+		t.Fatalf("expected nil attrs, got %#v", attrs)
+	}
+	if !matched {
+		t.Fatal("expected matched path (Format2 owns the request)")
+	}
+	if !errors.Is(err, ErrEndpointMethodNotAllowed) {
+		t.Fatalf("got err=%v, want ErrEndpointMethodNotAllowed", err)
 	}
 }
 

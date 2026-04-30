@@ -17,6 +17,7 @@ limitations under the License.
 package proxy
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -341,6 +342,34 @@ func TestGeneratingAuthorizerAttributes(t *testing.T) {
 				t.Errorf("Generated authorizer attributes are not correct. Expected %v, recieved %v", c.expected, res)
 			}
 		})
+	}
+}
+
+func TestGetRequestAttributes_nilAuthorizationReturnsError(t *testing.T) {
+	n := krpAuthorizerAttributesGetter{authzConfig: nil}
+	_, err := n.GetRequestAttributes(nil, httptest.NewRequest(http.MethodGet, "/accounts", nil))
+	if err == nil || err.Error() != "Error during authorization" {
+		t.Fatalf("unexpected err: %v", err)
+	}
+}
+
+func TestGetRequestAttributes_Format2PathMatchedWrongHTTPMethod(t *testing.T) {
+	cfg := &authz.Config{
+		Endpoints: []authz.Endpoint{{
+			Path: "/api/v1/evaluations/jobs/*/events",
+			Mappings: []authz.EndpointMapping{{
+				Methods: []string{"post"},
+				Resources: []authz.EndpointResourceRule{{
+					ResourceAttributes: authz.ResourceAttributes{Verb: "create", Resource: "status-events"},
+				}},
+			}},
+		}},
+	}
+	cfg.PrepareEndpoints()
+	n := krpAuthorizerAttributesGetter{authzConfig: cfg}
+	_, err := n.GetRequestAttributes(nil, httptest.NewRequest(http.MethodGet, "/api/v1/evaluations/jobs/j1/events", nil))
+	if !errors.Is(err, authz.ErrEndpointMethodNotAllowed) {
+		t.Fatalf("got err=%v, want ErrEndpointMethodNotAllowed", err)
 	}
 }
 

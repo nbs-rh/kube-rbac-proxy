@@ -204,6 +204,29 @@ func TestWithAuthorization(t *testing.T) {
 			},
 			status: http.StatusBadRequest,
 		},
+		{
+			name: "Format2 path matched but HTTP method not in mappings returns 403",
+			req: func() *http.Request {
+				r := httptest.NewRequest(http.MethodGet, "/api/v1/evaluations/jobs/j1/events", nil)
+				return r.WithContext(request.WithUser(r.Context(), &user.DefaultInfo{}))
+			}(),
+			authz: approver{},
+			cfg: &authz.Config{
+				Endpoints: []authz.Endpoint{{
+					Path: "/api/v1/evaluations/jobs/*/events",
+					Mappings: []authz.EndpointMapping{{
+						Methods: []string{"post"},
+						Resources: []authz.EndpointResourceRule{{
+							ResourceAttributes: authz.ResourceAttributes{
+								Namespace: "{{.FromHeader}}",
+								Verb:      "create",
+							},
+						}},
+					}},
+				}},
+			},
+			status: http.StatusForbidden,
+		},
 	} {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {

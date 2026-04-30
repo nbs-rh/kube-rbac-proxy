@@ -54,15 +54,22 @@ package authz
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/textproto"
+	"path"
 	"strings"
 	"text/template"
 
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 )
+
+// ErrEndpointMethodNotAllowed is returned by EndpointAttributesFromRequest when the request
+// path matches a Format2 endpoint but no mapping lists the request's HTTP method. Callers
+// (e.g. filters.WithAuthorization) may map this to HTTP 403 Forbidden.
+var ErrEndpointMethodNotAllowed = errors.New("HTTP method not allowed for matched authorization endpoint")
 
 // Endpoint describes path-scoped SAR mappings (Format2).
 type Endpoint struct {
@@ -115,9 +122,9 @@ func (c *Config) prepareEndpointPatterns() {
 }
 
 // MatchEndpoint reports whether requestPath matches the configured endpoint pattern.
-// Matching is exact by segment count: requestPath split into the same number of segments as
-// endpoint.Path (after PrepareEndpoints). A pattern segment "*" matches exactly one request
-// segment; it does not match zero or multiple trailing segments.
+// requestPath is cleaned with path.Clean (collapse duplicate slashes, ".", "..", trailing slash)
+// before splitting. Matching is exact by segment count against endpoint.Path (after PrepareEndpoints).
+// A pattern segment "*" matches exactly one request segment; it does not match zero or multiple trailing segments.
 func MatchEndpoint(requestPath string, endpoint Endpoint) bool {
 	return matchEndpoint(requestPath, endpoint)
 }
@@ -127,6 +134,10 @@ func matchEndpoint(requestPath string, endpoint Endpoint) bool {
 	if len(patternParts) == 0 {
 		return false
 	}
+	if requestPath == "" {
+		requestPath = "/"
+	}
+	requestPath = path.Clean(requestPath)
 	endpointParts := strings.Split(requestPath, "/")
 	if len(endpointParts) != len(patternParts) {
 		return false
@@ -217,18 +228,23 @@ func expandEndpointResourceField(fieldName, templateString string, templateData 
 	return s, nil
 }
 
-func findRulesForEndpoint(request *http.Request, endpoint Endpoint) []EndpointResourceRule {
+// rulesForEndpointMethod returns the resource rules from the first mapping that accepts
+// request.Method. The second return value is false when the endpoint path matched but no
+// mapping listed the HTTP method (caller should treat as method not allowed for that path).
+func rulesForEndpointMethod(request *http.Request, endpoint Endpoint) ([]EndpointResourceRule, bool) {
 	for _, mapping := range endpoint.Mappings {
 		if matchMethods(request.Method, mapping.Methods) {
-			return mapping.Resources
+			return mapping.Resources, true
 		}
 	}
-	return nil
+	return nil, false
 }
 
 // EndpointAttributesFromRequest derives SAR attributes from authorization.endpoints (Format2).
 // If the request path matches any endpoint entry, matched is true and Format1 top-level
 // resourceAttributes/rewrites must not be used for that request (even when attrs is empty or err is set).
+// If the path matches but no mapping accepts the request HTTP method, it returns matched==true
+// and err==ErrEndpointMethodNotAllowed (use errors.Is).
 func EndpointAttributesFromRequest(userInfo user.Info, request *http.Request, cfg *Config) (attrs []authorizer.Attributes, matched bool, err error) {
 	if cfg == nil || len(cfg.Endpoints) == 0 {
 		return nil, false, nil
@@ -237,7 +253,10 @@ func EndpointAttributesFromRequest(userInfo user.Info, request *http.Request, cf
 		if !matchEndpoint(request.URL.Path, endpoint) {
 			continue
 		}
-		rules := findRulesForEndpoint(request, endpoint)
+		rules, methodOK := rulesForEndpointMethod(request, endpoint)
+		if !methodOK {
+			return nil, true, ErrEndpointMethodNotAllowed
+		}
 		attrs, err := attributesFromEndpointResourceRules(userInfo, request, rules)
 		return attrs, true, err
 	}
@@ -247,59 +266,59 @@ func EndpointAttributesFromRequest(userInfo user.Info, request *http.Request, cf
 func attributesFromEndpointResourceRules(u user.Info, r *http.Request, rules []EndpointResourceRule) ([]authorizer.Attributes, error) {
 	var out []authorizer.Attributes
 	for _, rule := range rules {
-		tv := TemplateData{FromMethod: HTTPToKubeVerb(r.Method)}
+		td := TemplateData{FromMethod: HTTPToKubeVerb(r.Method)}
 
 		if rule.Rewrites.ByHTTPHeader != nil && rule.Rewrites.ByHTTPHeader.Name != "" {
-			v := r.Header.Get(rule.Rewrites.ByHTTPHeader.Name)
-			if v == "" {
+			headerValue := r.Header.Get(rule.Rewrites.ByHTTPHeader.Name)
+			if headerValue == "" {
 				return nil, fmt.Errorf("required header %q is missing", rule.Rewrites.ByHTTPHeader.Name)
 			}
-			tv.FromHeader = v
+			td.FromHeader = headerValue
 		}
-		qp := rewriteQueryParamName(&rule.Rewrites)
-		if qp != "" {
-			vs, ok := r.URL.Query()[qp]
+		queryParamName := rewriteQueryParamName(&rule.Rewrites)
+		if queryParamName != "" {
+			vs, ok := r.URL.Query()[queryParamName]
 			if !ok || len(vs) == 0 {
-				return nil, fmt.Errorf("required query parameter %q is missing", qp)
+				return nil, fmt.Errorf("required query parameter %q is missing", queryParamName)
 			}
-			tv.FromQueryString = vs[0]
+			td.FromQueryString = vs[0]
 		}
-		if tv.FromHeader != "" {
-			tv.Value = tv.FromHeader
-		} else if tv.FromQueryString != "" {
-			tv.Value = tv.FromQueryString
+		if td.FromHeader != "" {
+			td.Value = td.FromHeader
+		} else if td.FromQueryString != "" {
+			td.Value = td.FromQueryString
 		}
 
-		ra := rule.ResourceAttributes
-		verb, err := expandEndpointResourceField("verb", ra.Verb, tv)
+		resAttrs := rule.ResourceAttributes
+		verb, err := expandEndpointResourceField("verb", resAttrs.Verb, td)
 		if err != nil {
 			return nil, err
 		}
 		if verb == "" {
-			verb = tv.FromMethod
+			verb = td.FromMethod
 		}
 
-		ns, err := expandEndpointResourceField("namespace", ra.Namespace, tv)
+		ns, err := expandEndpointResourceField("namespace", resAttrs.Namespace, td)
 		if err != nil {
 			return nil, err
 		}
-		group, err := expandEndpointResourceField("apiGroup", ra.APIGroup, tv)
+		group, err := expandEndpointResourceField("apiGroup", resAttrs.APIGroup, td)
 		if err != nil {
 			return nil, err
 		}
-		version, err := expandEndpointResourceField("apiVersion", ra.APIVersion, tv)
+		version, err := expandEndpointResourceField("apiVersion", resAttrs.APIVersion, td)
 		if err != nil {
 			return nil, err
 		}
-		resource, err := expandEndpointResourceField("resource", ra.Resource, tv)
+		resource, err := expandEndpointResourceField("resource", resAttrs.Resource, td)
 		if err != nil {
 			return nil, err
 		}
-		subresource, err := expandEndpointResourceField("subresource", ra.Subresource, tv)
+		subresource, err := expandEndpointResourceField("subresource", resAttrs.Subresource, td)
 		if err != nil {
 			return nil, err
 		}
-		name, err := expandEndpointResourceField("name", ra.Name, tv)
+		name, err := expandEndpointResourceField("name", resAttrs.Name, td)
 		if err != nil {
 			return nil, err
 		}
