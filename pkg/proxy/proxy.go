@@ -50,7 +50,7 @@ func (n krpAuthorizerAttributesGetter) GetRequestAttributes(u user.Info, r *http
 	// Non-nil authorization is enforced in Complete before the server starts; this branch is defensive.
 	if n.authzConfig == nil {
 		klog.Error("GetRequestAttributes: authorization config is nil")
-		return nil, fmt.Errorf("Error during authorization")
+		return nil, fmt.Errorf("error during authorization")
 	}
 
 	// When Format2 endpoints are configured, try path/method-scoped rules before Format1.

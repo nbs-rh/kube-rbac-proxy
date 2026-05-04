@@ -348,7 +348,7 @@ func TestGeneratingAuthorizerAttributes(t *testing.T) {
 func TestGetRequestAttributes_nilAuthorizationReturnsError(t *testing.T) {
 	n := krpAuthorizerAttributesGetter{authzConfig: nil}
 	_, err := n.GetRequestAttributes(nil, httptest.NewRequest(http.MethodGet, "/accounts", nil))
-	if err == nil || err.Error() != "Error during authorization" {
+	if err == nil || err.Error() != "error during authorization" {
 		t.Fatalf("unexpected err: %v", err)
 	}
 }

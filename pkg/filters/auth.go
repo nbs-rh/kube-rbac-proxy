@@ -99,7 +99,7 @@ func WithAuthorization(
 			authorized, reason, err := az.Authorize(req.Context(), attrs)
 			if err != nil {
 				klog.Errorf("Authorization error (user=%s, verb=%s, resource=%s, subresource=%s): %v", u.GetName(), attrs.GetVerb(), attrs.GetResource(), attrs.GetSubresource(), err)
-				http.Error(w, "Error during authorization", http.StatusInternalServerError)
+				http.Error(w, "error during authorization", http.StatusInternalServerError)
 				return
 			}
 			if authorized != authorizer.DecisionAllow {
