@@ -182,6 +182,10 @@ func Complete(o *options.ProxyRunOptions) (*completedProxyRunOptions, error) {
 	completed.auth = o.Auth
 	completed.tls = o.TLS
 
+	if completed.auth == nil {
+		return nil, errors.New("authentication/authorization configuration is nil")
+	}
+
 	if configFileName := o.ConfigFileName; len(configFileName) > 0 {
 		completed.auth.Authorization, err = parseAuthorizationConfigFile(configFileName)
 		if err != nil {
