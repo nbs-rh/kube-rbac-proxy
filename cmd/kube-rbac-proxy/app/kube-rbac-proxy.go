@@ -192,9 +192,12 @@ func Complete(o *options.ProxyRunOptions) (*completedProxyRunOptions, error) {
 			return nil, fmt.Errorf("failed to read the config file: %w", err)
 		}
 	}
-	if completed.auth.Authorization != nil {
-		completed.auth.Authorization.PrepareEndpoints()
+
+	if completed.auth.Authorization == nil {
+		return nil, errors.New("authorization configuration is nil; ensure --config-file does not set authorization to null and that defaults are intact")
 	}
+
+	completed.auth.Authorization.PrepareEndpoints()
 
 	kubeconfig, err := initKubeConfig(o.KubeconfigLocation)
 	if err != nil {
@@ -220,10 +223,6 @@ func Complete(o *options.ProxyRunOptions) (*completedProxyRunOptions, error) {
 		MaxReadFrameSize:             o.HTTP2MaxSize,
 		MaxUploadBufferPerStream:     int32(o.HTTP2MaxSize),
 		MaxUploadBufferPerConnection: int32(o.HTTP2MaxSize) * int32(o.HTTP2MaxConcurrentStreams),
-	}
-
-	if completed.auth == nil || completed.auth.Authorization == nil {
-		return nil, errors.New("authorization configuration is nil; ensure --config-file does not set authorization to null and that defaults are intact")
 	}
 
 	return completed, nil
