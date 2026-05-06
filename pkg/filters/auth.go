@@ -31,6 +31,9 @@ import (
 	"k8s.io/klog/v2"
 )
 
+// authorizationBadRequestBody is returned for 400 responses from attribute building; details stay in logs only.
+const authorizationBadRequestBody = "Bad Request. The request or configuration is malformed."
+
 func WithAuthentication(
 	authReq authenticator.Request,
 	audiences []string,
@@ -84,13 +87,12 @@ func WithAuthorization(
 				return
 			}
 			klog.V(2).Infof("Bad Request: %v", err)
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, authorizationBadRequestBody, http.StatusBadRequest)
 			return
 		}
 		if len(allAttrs) == 0 {
-			msg := "Bad Request. The request or configuration is malformed."
-			klog.V(2).Info(msg)
-			http.Error(w, msg, http.StatusBadRequest)
+			klog.V(2).Info(authorizationBadRequestBody + " (no attributes generated)")
+			http.Error(w, authorizationBadRequestBody, http.StatusBadRequest)
 			return
 		}
 
